@@ -24,7 +24,7 @@ Userscript **VL Pzo Vjp** được cài đặt thông qua tiện ích **Tampermo
 
 Script cài đặt:
 
-**[https://github.com/nayumiDEV/K4-hackathon-VipCyberLord-E403/raw/refs/heads/main/dist/vlpzovjp.user.js](https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js)**
+**[https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js](https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js)**
 
 ---
 
@@ -74,7 +74,7 @@ Sau khi Tampermonkey đã được cài đặt:
 
 Mở đường dẫn:
 
-[https://github.com/nayumiDEV/K4-hackathon-VipCyberLord-E403/raw/refs/heads/main/dist/vlpzovjp.user.js](https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js)
+[https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js](https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js)
 
 Tampermonkey sẽ tự động mở cửa sổ cài đặt.
 
@@ -120,7 +120,7 @@ Sau khi Tampermonkey đã được cài đặt:
 
 Mở:
 
-https://github.com/nayumiDEV/K4-hackathon-VipCyberLord-E403/raw/refs/heads/main/dist/vlpzovjp.user.js
+https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js
 
 Firefox sẽ chuyển sang Tampermonkey và hiển thị cửa sổ cài đặt.
 
@@ -209,4 +209,4 @@ https://www.tampermonkey.net/
 
 **VL Pzo Vjp**
 
-https://github.com/nayumiDEV/K4-hackathon-VipCyberLord-E403/raw/refs/heads/main/dist/vlpzovjp.user.js
+https://github.com/nayumiDEV/VLPzoVjp/raw/refs/heads/main/dist/vlpzovjp.user.js
