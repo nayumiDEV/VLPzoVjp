@@ -1,19 +1,16 @@
 // ==UserScript==
 // @name         VLearn · VL Pzo Vjp Tutor
 // @namespace    vlpzovjp
-// @version      1.5.0
+// @version      1.5.5
 // @description  Thay VLearn Tutor bằng trợ lý nâng cao: hỏi đáp mọi trang trong bài, tóm tắt, quiz tương tác, flashcard, mindmap (danh sách / trực quan / diagram SVG tải được ảnh), giải thích vùng bôi đen, tải slide bài giảng có hình mờ email học viên. Gõ thẳng yêu cầu ("tạo 10 câu hỏi khó từ slide 3-5") là ra widget tương tác.
 // @author       VL Pzo Vjp
 // @match        https://vlearn.dev/*
 // @match        https://www.vlearn.dev/*
 // @grant        GM_xmlhttpRequest
 // @require      https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js
-// @connect      openrouter.ai
-// @connect      api.mistral.ai
-// @connect      generativelanguage.googleapis.com
-// @connect      api.z.ai
-// @connect      cdn.jsdelivr.net
+// @connect      *
 // @run-at       document-idle
+// @icon         https://www.google.com/s2/favicons?domain=vlearn.dev&sz=128
 // @noframes
 // ==/UserScript==
 
@@ -26,42 +23,78 @@
   let SLIDE_INDEX = {};  // "course/slideId" → pdfName
   let DATA_READY = false;
 
-  const PROVIDERS = {
-    openrouter: {
-      label: 'OpenRouter',
-      endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-      model: 'google/gemini-3.6-flash',
-      models: [
-        'google/gemini-3.6-flash',
-        'google/gemini-3.5-flash-lite',
-        'z-ai/glm-5.2',
-        'mistralai/mistral-medium-3-5',
-        'openai/gpt-oss-20b:free',
-      ],
-      keyUrl: 'https://openrouter.ai/settings/keys',
-    },
-    mistral: {
-      label: 'Mistral',
-      endpoint: 'https://api.mistral.ai/v1/chat/completions',
-      model: 'mistral-large-latest',
-      models: ['mistral-large-latest', 'mistral-medium-latest', 'mistral-small-latest'],
-      keyUrl: 'https://console.mistral.ai/api-keys',
-    },
-    google: {
-      label: 'Google Gemini',
-      endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-      model: 'gemini-3.6-flash',
-      models: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'],
-      keyUrl: 'https://aistudio.google.com/apikey',
-    },
-    zai: {
-      label: 'Z.AI (GLM)',
-      endpoint: 'https://api.z.ai/api/paas/v4/chat/completions',
-      model: 'glm-5.2',
-      models: ['glm-5.2', 'glm-5-turbo', 'glm-4.7-flash', 'glm-4.6'],
-      keyUrl: 'https://z.ai/manage-apikey/apikey-list',
-    },
-  };
+  /** Model dùng khi người dùng bỏ trống ô model. */
+  const DEFAULT_MODEL = 'gpt-4o-mini';
+
+  /**
+   * Chuẩn hóa điểm cuối OpenAI Compatible người dùng dán vào.
+   *
+   * Nhận cả đường dẫn đầy đủ và đường dẫn thiếu, rồi luôn trả về URL
+   * kết thúc bằng /chat/completions:
+   *   https://api.example.com/v1/chat/completions → giữ nguyên
+   *   https://api.example.com/v1                  → + /chat/completions
+   *   https://api.example.com/v1/                 → + chat/completions
+   *   https://api.example.com                     → + /v1/chat/completions
+   *   api.example.com/v1                          → + https:// ở đầu
+   *
+   * @param {string} raw
+   * @returns {{url:string, base:string, added:string}|null} null nếu không phải URL hợp lệ
+   */
+  function normalizeEndpoint(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return null;
+    // bỏ dấu ngoặc/nháy nếu người dùng copy kèm
+    s = s.replace(/^["'<(]+/, '').replace(/[">')]+$/, '');
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = 'https://' + s;
+
+    let u;
+    try {
+      u = new URL(s);
+    } catch {
+      return null;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (!u.hostname) return null;
+
+    // chỉ giữ phần đường dẫn — bỏ query/hash vì endpoint chat không dùng tới
+    u.search = '';
+    u.hash = '';
+
+    let path = u.pathname.replace(/\/+$/, ''); // bỏ dấu / ở cuối
+    let added = '';
+
+    if (/\/chat\/completions$/.test(path)) {
+      // đã đầy đủ
+    } else if (/\/completions$/.test(path)) {
+      // .../v1/completions → completion kiểu cũ, đổi sang chat
+      path = path.replace(/\/completions$/, '/chat/completions');
+      added = '/chat/completions';
+    } else if (path === '' || path === '/') {
+      path = '/v1/chat/completions';
+      added = '/v1/chat/completions';
+    } else {
+      path = path + '/chat/completions';
+      added = '/chat/completions';
+    }
+
+    u.pathname = path;
+    const url = u.toString();
+    return {
+      url,
+      base: url.replace(/\/chat\/completions$/, ''),
+      added,
+    };
+  }
+
+
+  /** Lấy hostname của một URL, '' nếu không parse được. */
+  function hostOf(u) {
+    try {
+      return new URL(String(u)).hostname;
+    } catch {
+      return '';
+    }
+  }
 
   const MAX_CTX_CHARS = 70000;
   const VERSION = '1.5.0';
@@ -234,13 +267,12 @@
     },
 
     snapshot() {
-      const prov = cfg.provider();
       return {
         version: VERSION,
         mứcLog: log.name(),
-        provider: prov,
-        model: prov ? cfg.model(prov) : null,
-        key: maskKey(prov ? cfg.key(prov) : ''),
+        endpoint: cfg.endpoint() || null,
+        model: cfg.endpoint() ? cfg.model() : null,
+        key: maskKey(cfg.key()),
         hạnMức: limits.on() ? 'BẬT' : 'TẮT (demo)',
         bàiHọc: ctx.lessonKey(),
         pdf: ctx.pdf(),
@@ -280,7 +312,7 @@
           'VLPzoVjp.log()': 'xem mức log hiện tại',
           'VLPzoVjp.log("trace")': `đặt mức log — ${LOG_LEVELS.join(' < ')}`,
           'VLPzoVjp.stats()': 'số lượt gọi API, token, số mục đã tạo…',
-          'VLPzoVjp.state()': 'provider, model, bài học, trang, số mục đã lưu…',
+          'VLPzoVjp.state()': 'điểm cuối, model, bài học, trang, số mục đã lưu…',
           'VLPzoVjp.data()': 'liệt kê tài liệu slide đã nạp',
           'VLPzoVjp.saved()': 'xổ quiz/flashcard/mindmap đã lưu ở bài đang học',
           'VLPzoVjp.savePdf()': 'tải toàn bộ slide bài giảng, đóng hình mờ email học viên',
@@ -971,26 +1003,31 @@
   /* ═══════════════════════════════════════════════════════════ LLM client */
 
   const cfg = {
-    provider: () => store.get('provider', null),
-    key: (p) => store.get(`key:${p || cfg.provider()}`, ''),
-    model: (p) => {
-      const prov = p || cfg.provider();
-      return store.get(`model:${prov}`, '') || (PROVIDERS[prov] ? PROVIDERS[prov].model : '');
-    },
-    save(provider, key, model) {
-      store.set('provider', provider);
-      store.set(`key:${provider}`, key);
-      if (model) store.set(`model:${provider}`, model);
-      else store.del(`model:${provider}`);
-      log.info('config', `lưu cấu hình cho ${provider}`, {
-        model: cfg.model(provider),
+    /** Điểm cuối đã chuẩn hóa (luôn kết thúc /chat/completions), '' nếu chưa cấu hình. */
+    endpoint: () => store.get('endpoint', '') || '',
+    /** Nguyên văn người dùng đã dán — để hiện lại đúng thứ họ nhập. */
+    endpointRaw: () => store.get('endpointRaw', '') || store.get('endpoint', '') || '',
+    key: () => store.get('key', '') || '',
+    model: () => store.get('model', '') || DEFAULT_MODEL,
+    save(endpointRaw, key, model) {
+      const norm = normalizeEndpoint(endpointRaw);
+      if (!norm) throw new Error('Điểm cuối không hợp lệ.');
+      store.set('endpoint', norm.url);
+      store.set('endpointRaw', String(endpointRaw || '').trim());
+      store.set('key', key);
+      if (model) store.set('model', model);
+      else store.del('model');
+      log.info('config', 'lưu cấu hình OpenAI Compatible', {
+        endpoint: norm.url,
+        tựThêm: norm.added || '(không cần thêm gì)',
+        model: cfg.model(),
         key: maskKey(key),
-        nơiLưu: `localStorage ${LS}key:${provider}`,
+        nơiLưu: `localStorage ${LS}key`,
       });
+      return norm;
     },
     ready() {
-      const p = cfg.provider();
-      return !!(p && PROVIDERS[p] && cfg.key(p));
+      return !!(cfg.endpoint() && cfg.key());
     },
   };
 
@@ -1049,15 +1086,14 @@
     tag = 'chat',
   }) {
     const id = `#${++callSeq}`;
-    const prov = cfg.provider();
-    const spec = PROVIDERS[prov];
-    if (!spec) {
-      log.error('api', `${id} thiếu cấu hình: chưa chọn nhà cung cấp`);
-      throw new Error('Chưa chọn nhà cung cấp.');
+    const endpoint = cfg.endpoint();
+    if (!endpoint) {
+      log.error('api', `${id} thiếu cấu hình: chưa có điểm cuối API`);
+      throw new Error('Chưa có điểm cuối API.');
     }
-    const key = cfg.key(prov);
+    const key = cfg.key();
     if (!key) {
-      log.error('api', `${id} thiếu cấu hình: chưa có API key cho ${prov}`);
+      log.error('api', `${id} thiếu cấu hình: chưa có API key`);
       throw new Error('Chưa có API key.');
     }
 
@@ -1071,7 +1107,7 @@
     messages.push({ role: 'user', content: user });
 
     const payload = {
-      model: cfg.model(prov),
+      model: cfg.model(),
       messages,
       temperature,
       max_tokens: maxTokens || limits.tokenCap(),
@@ -1082,16 +1118,17 @@
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     };
-    if (prov === 'openrouter') {
+    // OpenRouter đòi 2 header này để ghi nhận nguồn gọi; chỗ khác bỏ qua vô hại
+    if (/(^|\.)openrouter\.ai$/i.test(hostOf(endpoint))) {
       headers['HTTP-Referer'] = location.origin;
       headers['X-Title'] = 'VL Pzo Vjp Tutor';
     }
 
     const bodyStr = JSON.stringify(payload);
     stats.promptChars += bodyStr.length;
-    log.group('info', 'api', `${id} → ${tag} · ${prov}/${payload.model}`, (g) => {
+    log.group('info', 'api', `${id} → ${tag} · ${payload.model}`, (g) => {
       g.kv({
-        endpoint: spec.endpoint,
+        endpoint,
         transport: GM_XHR ? 'GM_xmlhttpRequest' : 'fetch (có thể bị CORS)',
         key: maskKey(key),
         temperature,
@@ -1114,7 +1151,7 @@
     const done = log.timer();
     let res;
     try {
-      res = await httpPost(spec.endpoint, headers, bodyStr, signal);
+      res = await httpPost(endpoint, headers, bodyStr, signal);
     } catch (e) {
       const ms = done();
       stats.apiMsTotal += ms;
@@ -1124,8 +1161,8 @@
       }
       stats.apiFails++;
       log.error('api', `${id} lỗi mạng sau ${ms}ms: ${e.message}`, {
-        gợiÝ: 'kiểm tra mạng, hoặc @connect của userscript có đủ host chưa',
-        endpoint: spec.endpoint,
+        gợiÝ: 'kiểm tra mạng, điểm cuối có đúng chưa, hoặc @connect của userscript có cho host này chưa',
+        endpoint,
       });
       throw new Error(`${e.message} (kiểm tra mạng hoặc @connect của userscript)`);
     }
@@ -1145,11 +1182,11 @@
           : res.status === 429
             ? ' — bị giới hạn tốc độ, thử lại sau.'
             : res.status === 404
-              ? ' — model không tồn tại với nhà cung cấp này.'
+              ? ' — model không tồn tại, hoặc điểm cuối sai đường dẫn.'
               : '';
       stats.apiFails++;
       log.group('error', 'api', `${id} ✗ HTTP ${res.status} sau ${ms}ms`, (g) => {
-        g.kv({ provider: prov, model: payload.model, gợiÝ: hint.trim() || '(không rõ)' });
+        g.kv({ endpoint, model: payload.model, gợiÝ: hint.trim() || '(không rõ)' });
         g.text('body trả về:', res.text ? res.text.slice(0, 2000) : '(rỗng)');
       });
       throw new Error(`API lỗi ${res.status}${hint}\n${detail}`);
@@ -1192,7 +1229,7 @@
         finish_reason: choice.finish_reason || '(không có)',
         token: usage.total_tokens
           ? `${usage.prompt_tokens || '?'} vào + ${usage.completion_tokens || '?'} ra = ${usage.total_tokens}`
-          : '(nhà cung cấp không trả usage)',
+          : '(điểm cuối không trả usage)',
         modelThựcDùng: data.model || payload.model,
       });
       if (choice.finish_reason === 'length') {
@@ -1524,14 +1561,8 @@
   .vp-setup p.lead { font-size:11.5px; color:#64748b; margin:0 0 14px; line-height:1.6; }
   .vp-label { display:block; font-size:11px; font-weight:700; margin:12px 0 5px; color:#475569; }
   .vp-dark .vp-label { color:#cbd5e1; }
-  .vp-provgrid { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
-  .vp-prov {
-    padding:9px; border-radius:11px; border:1px solid #e2e8f0; background:#f8fafc;
-    font-size:12px; font-weight:600; color:#475569; cursor:pointer; text-align:center;
-  }
-  .vp-prov.sel { border-color:#6366f1; background:#eef2ff; color:#4338ca; box-shadow:0 0 0 3px rgba(99,102,241,.13); }
-  .vp-dark .vp-prov { background:#0f172a; border-color:#334155; color:#cbd5e1; }
-  .vp-dark .vp-prov.sel { background:#1e1b4b; border-color:#6366f1; color:#a5b4fc; }
+  .vp-ephint { word-break:break-all; }
+  .vp-ephint.bad { color:#dc2626; }
   .vp-note { font-size:10.5px; color:#94a3b8; margin-top:6px; line-height:1.55; }
 
   .vp-spin { display:inline-block; width:13px; height:13px; border:2px solid currentColor;
@@ -2126,7 +2157,7 @@
         ],
         [`🔊 Log console: ${log.name().toUpperCase()}`, () => actions.cycleLog()],
         ['📊 Số liệu phiên này', () => actions.logStats()],
-        ['⚙️ Đổi provider / API key', () => showSetup(true)],
+        ['⚙️ Đổi điểm cuối / API key', () => showSetup(true)],
         ['🧹 Xóa hết dữ liệu đã lưu ở bài này', () => actions.clearSaved()],
       ];
       menuEl = el('div', { class: 'vp-menu' });
@@ -2202,10 +2233,16 @@
     function showSetup(canCancel) {
       closeMenu();
       body.textContent = '';
-      let picked = cfg.provider() || 'openrouter';
 
       const wrap = el('div', { class: 'vp-setup' });
-      const grid = el('div', { class: 'vp-provgrid' });
+      const epInput = el('input', {
+        class: 'vp-input',
+        type: 'text',
+        placeholder: 'https://api.example.com/v1',
+        autocomplete: 'off',
+        spellcheck: 'false',
+      });
+      const epHint = el('div', { class: 'vp-note vp-ephint' });
       const keyInput = el('input', {
         class: 'vp-input',
         type: 'password',
@@ -2216,56 +2253,61 @@
       const modelInput = el('input', {
         class: 'vp-input',
         type: 'text',
+        placeholder: DEFAULT_MODEL,
         autocomplete: 'off',
         spellcheck: 'false',
-        list: 'vp-models',
-      });
-      const modelList = el('datalist', { id: 'vp-models' });
-      const keyLink = el('a', {
-        target: '_blank',
-        rel: 'noopener',
-        style: 'color:#4f46e5;text-decoration:underline',
       });
       const errBox = el('div', {
         class: 'vp-note',
         style: 'color:#dc2626;display:none;white-space:pre-wrap',
       });
 
-      function syncProv() {
-        for (const b of grid.children) b.classList.toggle('sel', b.dataset.p === picked);
-        keyInput.value = cfg.key(picked) || '';
-        modelInput.value = cfg.model(picked) || '';
-        modelInput.placeholder = PROVIDERS[picked].model;
-        keyLink.textContent = `Lấy key ${PROVIDERS[picked].label}`;
-        keyLink.href = PROVIDERS[picked].keyUrl;
-        modelList.textContent = '';
-        for (const m of PROVIDERS[picked].models || []) {
-          modelList.appendChild(el('option', { value: m }));
+      /** Hiện URL sẽ gọi thật, để người dùng thấy phần script tự thêm vào. */
+      function syncHint() {
+        const raw = epInput.value.trim();
+        if (!raw) {
+          epHint.textContent =
+            'Dán được cả dạng đầy đủ (…/v1/chat/completions) hay dạng gốc (…/v1) — script tự nhận ra.';
+          epHint.classList.remove('bad');
+          return;
         }
-      }
-
-      for (const [id, spec] of Object.entries(PROVIDERS)) {
-        const b = el('button', { class: 'vp-prov', type: 'button', text: spec.label });
-        b.dataset.p = id;
-        b.addEventListener('click', () => {
-          picked = id;
-          syncProv();
-        });
-        grid.appendChild(b);
+        const norm = normalizeEndpoint(raw);
+        if (!norm) {
+          epHint.textContent = 'Không đọc được URL này.';
+          epHint.classList.add('bad');
+          return;
+        }
+        epHint.classList.remove('bad');
+        epHint.textContent = norm.added
+          ? `Sẽ gọi: ${norm.url}  (tự thêm ${norm.added})`
+          : `Sẽ gọi: ${norm.url}`;
       }
 
       const saveBtn = el('button', { class: 'vp-btn primary', type: 'button', text: 'Lưu & bắt đầu' });
-      const testBtn = el('button', { class: 'vp-btn', type: 'button', text: 'Kiểm tra key' });
+      const testBtn = el('button', { class: 'vp-btn', type: 'button', text: 'Kiểm tra kết nối' });
 
       async function doSave(test) {
+        const rawEp = epInput.value.trim();
         const key = keyInput.value.trim();
         errBox.style.display = 'none';
+        if (!rawEp) {
+          errBox.textContent = 'Bạn chưa nhập điểm cuối OpenAI Compatible.';
+          errBox.style.display = 'block';
+          return;
+        }
+        if (!normalizeEndpoint(rawEp)) {
+          errBox.textContent =
+            'Điểm cuối không hợp lệ. Ví dụ: https://api.example.com/v1 ' +
+            'hoặc https://api.example.com/v1/chat/completions';
+          errBox.style.display = 'block';
+          return;
+        }
         if (!key) {
           errBox.textContent = 'Bạn chưa dán API key.';
           errBox.style.display = 'block';
           return;
         }
-        cfg.save(picked, key, modelInput.value.trim());
+        cfg.save(rawEp, key, modelInput.value.trim());
         if (!test) {
           welcome();
           return;
@@ -2274,12 +2316,12 @@
         testBtn.innerHTML = '<span class="vp-spin"></span> Đang thử…';
         try {
           await askLLM({ user: 'Trả lời đúng một từ: OK', temperature: 0 });
-          testBtn.textContent = '✓ Key hoạt động';
+          testBtn.textContent = '✓ Kết nối được';
           testBtn.classList.add('saved');
         } catch (e) {
           errBox.textContent = e.message;
           errBox.style.display = 'block';
-          testBtn.textContent = 'Kiểm tra key';
+          testBtn.textContent = 'Kiểm tra kết nối';
         } finally {
           testBtn.disabled = saveBtn.disabled = false;
         }
@@ -2287,26 +2329,28 @@
 
       saveBtn.addEventListener('click', () => doSave(false));
       testBtn.addEventListener('click', () => doSave(true));
-      keyInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') doSave(false);
-      });
+      epInput.addEventListener('input', syncHint);
+      for (const inp of [epInput, keyInput, modelInput]) {
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') doSave(false);
+        });
+      }
 
       wrap.append(
         el('h3', { text: 'Kết nối bộ não cho Tutor' }),
         el('p', {
           class: 'lead',
           text:
-            'Chọn nhà cung cấp và dán API key của bạn. Key được lưu trong localStorage của trình duyệt ' +
-            'trên máy bạn và chỉ gửi trực tiếp tới nhà cung cấp đó.',
+            'Nhập điểm cuối OpenAI Compatible và API key của bạn. Key được lưu trong localStorage ' +
+            'của trình duyệt trên máy bạn và chỉ gửi trực tiếp tới điểm cuối đó.',
         }),
-        el('label', { class: 'vp-label', text: 'Nhà cung cấp' }),
-        grid,
+        el('label', { class: 'vp-label', text: 'Điểm cuối OpenAI Compatible' }),
+        epInput,
+        epHint,
         el('label', { class: 'vp-label', text: 'API key' }),
         keyInput,
-        el('div', { class: 'vp-note' }, keyLink),
         el('label', { class: 'vp-label', text: 'Model (bỏ trống để dùng mặc định)' }),
         modelInput,
-        modelList,
         errBox,
         el(
           'div',
@@ -2322,12 +2366,15 @@
           style: 'margin-top:14px',
           text:
             'Lưu ý: userscript gọi API bằng GM_xmlhttpRequest nên không bị CORS. ' +
-            'Nếu chạy bằng cách dán vào console, một số nhà cung cấp có thể bị CORS chặn.',
+            'Nếu chạy bằng cách dán vào console, một số điểm cuối có thể bị CORS chặn.',
         })
       );
 
       body.appendChild(wrap);
-      syncProv();
+      epInput.value = cfg.endpointRaw();
+      keyInput.value = cfg.key();
+      modelInput.value = store.get('model', '') || '';
+      syncHint();
     }
 
     /* ------------------------------------------- nút lưu (kèm menu tùy chọn) */
@@ -3145,7 +3192,7 @@
         return false;
       }
       if (!cfg.ready()) {
-        log.warn('ui', 'chưa cấu hình provider/API key → mở màn hình thiết lập');
+        log.warn('ui', 'chưa cấu hình điểm cuối/API key → mở màn hình thiết lập');
         showSetup(true);
         return false;
       }
@@ -3837,7 +3884,7 @@
       if (!body.childElementCount) {
         if (cfg.ready()) welcome();
         else {
-          log.warn('mount', 'chưa có provider/API key → hiện màn hình thiết lập');
+          log.warn('mount', 'chưa có điểm cuối/API key → hiện màn hình thiết lập');
           showSetup(false);
         }
       }
