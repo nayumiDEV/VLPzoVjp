@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VLearn · VL Pzo Vjp Tutor
 // @namespace    vlpzovjp
-// @version      1.5.0
+// @version      1.5.7
 // @description  Thay VLearn Tutor bằng trợ lý nâng cao: hỏi đáp mọi trang trong bài, tóm tắt, quiz tương tác, flashcard, mindmap (danh sách / trực quan / diagram SVG tải được ảnh), giải thích vùng bôi đen, tải slide bài giảng có hình mờ email học viên. Gõ thẳng yêu cầu ("tạo 10 câu hỏi khó từ slide 3-5") là ra widget tương tác.
 // @author       VL Pzo Vjp
 // @match        https://vlearn.dev/*
